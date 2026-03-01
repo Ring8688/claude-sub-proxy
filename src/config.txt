@@ -1,0 +1,5 @@
+# Claude Sub Proxy Configuration
+port=42069
+host=
+log_level=INFO
+auto_open_browser=true

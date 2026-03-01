@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authenticate with Claude</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 700px;
+      margin: 80px auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      background: white;
+      border-radius: 8px;
+      padding: 40px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 { color: #2d3748; margin-bottom: 20px; }
+    .step {
+      background-color: #f0f7ff;
+      border-left: 4px solid #1890ff;
+      padding: 15px;
+      margin: 20px 0;
+    }
+    .step strong { color: #1890ff; display: block; margin-bottom: 10px; }
+    .button {
+      background-color: #1890ff;
+      color: white;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 4px;
+      font-size: 16px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+      margin: 10px 0;
+    }
+    .button:hover { background-color: #0066cc; }
+    input[type="text"] {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #d9d9d9;
+      border-radius: 4px;
+      font-size: 14px;
+      font-family: 'Courier New', monospace;
+      margin: 10px 0;
+      box-sizing: border-box;
+    }
+    .form-group { margin: 20px 0; }
+    label { display: block; margin-bottom: 8px; font-weight: 500; color: #2d3748; }
+    .warning {
+      background-color: #fff7e6;
+      border-left: 4px solid #ffa940;
+      padding: 12px;
+      margin: 15px 0;
+      color: #ad6800;
+    }
+    .status { margin-top: 20px; padding: 12px; border-radius: 4px; display: none; }
+    .status.ok { display: block; background: #f6ffed; border: 1px solid #b7eb8f; color: #389e0d; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Claude Sub Proxy - Authentication</h1>
+    <div id="statusBox" class="status"></div>
+
+    <div class="step">
+      <strong>Step 1: Open Authorization Page</strong>
+      Click the button below to open Claude's OAuth authorization page. Log in with your Claude.ai account (MAX/Pro subscription required).
+    </div>
+    <a href="#" class="button" id="authButton">Open Authorization Page</a>
+
+    <div class="step">
+      <strong>Step 2: Copy Authorization Code</strong>
+      After authorizing, the page will display an authorization code. Copy the entire string.
+    </div>
+
+    <div class="warning">
+      <strong>Note:</strong> The code format is <code>code#state</code> — copy the entire string including the # symbol.
+    </div>
+
+    <div class="step">
+      <strong>Step 3: Submit Code</strong>
+      Paste the code below and click Submit.
+    </div>
+
+    <form action="/auth/callback" method="GET">
+      <div class="form-group">
+        <label for="codeInput">Authorization Code:</label>
+        <input type="text" id="codeInput" name="manual_code" placeholder="Paste code#state here" required>
+      </div>
+      <button type="submit" class="button">Submit Code</button>
+    </form>
+  </div>
+
+  <script>
+    document.getElementById('authButton').addEventListener('click', async function(e) {
+      e.preventDefault();
+      const response = await fetch('/auth/get-url');
+      const data = await response.json();
+      if (data.url) window.open(data.url, '_blank');
+    });
+
+    (async function checkStatus() {
+      try {
+        const res = await fetch('/auth/status');
+        const data = await res.json();
+        if (data.authenticated) {
+          const box = document.getElementById('statusBox');
+          box.className = 'status ok';
+          box.innerHTML = 'Already authenticated. Token expires: ' + new Date(data.expires_at).toLocaleString();
+        }
+      } catch(e) {}
+    })();
+  </script>
+</body>
+</html>
