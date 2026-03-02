@@ -35,6 +35,8 @@ export async function executeNonStreaming(body, config = {}) {
     }
   } catch (error) {
     Logger.error('SDK query error:', error.message);
+    if (error.stderr) Logger.error('SDK stderr:', error.stderr);
+    if (error.stack) Logger.debug('SDK stack:', error.stack);
     throw error;
   }
 

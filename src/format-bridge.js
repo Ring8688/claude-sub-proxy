@@ -62,9 +62,6 @@ export function requestToSDKParams(body, config = {}) {
     tools: [],                    // No built-in tools
     maxTurns: 1,                  // Single turn
     includePartialMessages: !!body.stream,
-    persistSession: false,        // Ephemeral — don't write session files
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
   };
 
   // System prompt: custom string overrides Claude Code default
