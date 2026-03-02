@@ -145,7 +145,7 @@ Clients must provide the key via `x-api-key` header or `Authorization: Bearer` h
 ```bash
 docker run -d \
   -p 8080:8080 \
-  -v ~/.claude:/root/.claude:ro \
+  -v ~/.claude:/root/.claude:rw \
   -e CSP_PORT=8080 \
   -e CSP_LOG_LEVEL=DEBUG \
   -e CSP_MODEL_DEFAULT=claude-opus-4-6 \

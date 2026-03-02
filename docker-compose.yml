@@ -1,0 +1,17 @@
+services:
+  claude-sub-proxy:
+    build: .
+    ports:
+      - "${CSP_PORT:-42069}:${CSP_PORT:-42069}"
+    volumes:
+      - ~/.claude:/root/.claude:rw   # rw: SDK needs to write back refreshed tokens
+    environment:
+      - CSP_PROXY_API_KEY=${CSP_PROXY_API_KEY}
+      - CSP_HOST=0.0.0.0
+      - CSP_PORT=${CSP_PORT:-42069}
+      - CSP_LOG_LEVEL=${CSP_LOG_LEVEL:-INFO}
+      - CSP_MODEL_DEFAULT=${CSP_MODEL_DEFAULT:-claude-sonnet-4-6}
+      - CSP_SYSTEM_PROMPT=${CSP_SYSTEM_PROMPT:-}
+      - CSP_TOOLS_ENABLED=${CSP_TOOLS_ENABLED:-false}
+      - CSP_MAX_THINKING_TOKENS=${CSP_MAX_THINKING_TOKENS:-}
+    restart: unless-stopped

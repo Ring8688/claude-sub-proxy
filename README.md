@@ -67,13 +67,28 @@ Unlike v1 which was a reverse proxy with manual OAuth token management, v2 uses 
 docker build -t claude-sub-proxy .
 
 # Run with Claude Code credentials
-docker run -d -p 42069:42069 -v ~/.claude:/root/.claude:ro claude-sub-proxy
+# Note: rw is required — the SDK writes back refreshed tokens
+docker run -d -p 42069:42069 -v ~/.claude:/root/.claude:rw claude-sub-proxy
 
 # Run with proxy authentication
 docker run -d -p 42069:42069 \
-  -v ~/.claude:/root/.claude:ro \
+  -v ~/.claude:/root/.claude:rw \
   -e CSP_PROXY_API_KEY=your-secret-key \
   claude-sub-proxy
+```
+
+**Docker Compose (recommended for deployment):**
+
+```bash
+# Copy and edit the env file
+cp .env.example .env
+# Set CSP_PROXY_API_KEY in .env
+
+# Start
+docker compose up -d
+
+# View logs
+docker compose logs -f
 ```
 
 ## Proxy API Key Authentication

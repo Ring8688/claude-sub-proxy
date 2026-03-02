@@ -67,13 +67,28 @@ message = client.messages.create(
 docker build -t claude-sub-proxy .
 
 # 使用 Claude Code 凭据运行
-docker run -d -p 42069:42069 -v ~/.claude:/root/.claude:ro claude-sub-proxy
+# 注意：必须使用 rw —— SDK 刷新 token 后需要写回
+docker run -d -p 42069:42069 -v ~/.claude:/root/.claude:rw claude-sub-proxy
 
 # 使用代理认证运行
 docker run -d -p 42069:42069 \
-  -v ~/.claude:/root/.claude:ro \
+  -v ~/.claude:/root/.claude:rw \
   -e CSP_PROXY_API_KEY=your-secret-key \
   claude-sub-proxy
+```
+
+**Docker Compose（推荐部署方式）：**
+
+```bash
+# 复制并编辑环境变量文件
+cp .env.example .env
+# 在 .env 中设置 CSP_PROXY_API_KEY
+
+# 启动
+docker compose up -d
+
+# 查看日志
+docker compose logs -f
 ```
 
 ## 代理 API Key 认证

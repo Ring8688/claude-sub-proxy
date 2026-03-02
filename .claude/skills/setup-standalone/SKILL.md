@@ -53,10 +53,11 @@ docker build -t claude-sub-proxy .
 **Run with environment variables:**
 
 ```bash
+# Note: rw is required — the SDK writes back refreshed tokens
 docker run -d \
   --name claude-sub-proxy \
   -p 42069:42069 \
-  -v ~/.claude:/root/.claude:ro \
+  -v ~/.claude:/root/.claude:rw \
   -e CSP_PROXY_API_KEY=your-generated-key \
   -e CSP_LOG_LEVEL=INFO \
   claude-sub-proxy
@@ -65,18 +66,22 @@ docker run -d \
 **docker-compose.yml template:**
 
 ```yaml
-version: '3.8'
 services:
   claude-sub-proxy:
     build: .
     ports:
-      - "42069:42069"
+      - "${CSP_PORT:-42069}:${CSP_PORT:-42069}"
     volumes:
-      - ~/.claude:/root/.claude:ro
+      - ~/.claude:/root/.claude:rw   # rw: SDK needs to write back refreshed tokens
     environment:
-      - CSP_PROXY_API_KEY=your-generated-key
-      - CSP_LOG_LEVEL=INFO
-      - CSP_MODEL_DEFAULT=claude-sonnet-4-6
+      - CSP_PROXY_API_KEY=${CSP_PROXY_API_KEY}
+      - CSP_HOST=0.0.0.0
+      - CSP_PORT=${CSP_PORT:-42069}
+      - CSP_LOG_LEVEL=${CSP_LOG_LEVEL:-INFO}
+      - CSP_MODEL_DEFAULT=${CSP_MODEL_DEFAULT:-claude-sonnet-4-6}
+      - CSP_SYSTEM_PROMPT=${CSP_SYSTEM_PROMPT:-}
+      - CSP_TOOLS_ENABLED=${CSP_TOOLS_ENABLED:-false}
+      - CSP_MAX_THINKING_TOKENS=${CSP_MAX_THINKING_TOKENS:-}
     restart: unless-stopped
 ```
 
@@ -176,6 +181,6 @@ message = client.messages.create(
 ## Key Points
 
 - **Always set `CSP_PROXY_API_KEY`** — standalone services should require authentication
-- **Docker mounts credentials read-only** (`-v ~/.claude:/root/.claude:ro`)
+- **Docker mounts credentials read-write** (`-v ~/.claude:/root/.claude:rw`) — the SDK writes back refreshed tokens
 - **Host auto-detection** — Docker containers automatically bind `0.0.0.0`
 - **Restart policy** — use `restart: unless-stopped` (Docker) or `Restart=on-failure` (systemd)
