@@ -1,25 +1,13 @@
-const http = require('http');
-const url = require('url');
-const fs = require('fs');
-const path = require('path');
-const { exec } = require('child_process');
-const ClaudeRequest = require('./claude-request');
-const Logger = require('./logger');
-const OAuthManager = require('./oauth-manager');
+import http from 'http';
+import url from 'url';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { fileURLToPath } from 'url';
+import Logger from './logger.js';
+import { executeNonStreaming, executeStreaming } from './claude-executor.js';
 
-// PKCE state storage with automatic 10-minute expiration
-const pkceStates = new Map();
-const PKCE_EXPIRY_MS = 10 * 60 * 1000;
-
-function cleanupExpiredPKCE() {
-  const now = Date.now();
-  for (const [state, data] of pkceStates.entries()) {
-    if (now - data.created_at > PKCE_EXPIRY_MS) {
-      pkceStates.delete(state);
-    }
-  }
-}
-setInterval(cleanupExpiredPKCE, 60000);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function loadConfig() {
   const config = {};
@@ -37,12 +25,29 @@ function loadConfig() {
       }
     });
 
-    Logger.init(config);
     Logger.info('Config loaded from config.txt');
   } catch (error) {
-    Logger.init(config);
     Logger.warn(`Using default config: ${error.message}`);
   }
+
+  // Environment variable overrides (CSP_ prefix)
+  const envMap = {
+    CSP_PORT: 'port',
+    CSP_HOST: 'host',
+    CSP_LOG_LEVEL: 'log_level',
+    CSP_MODEL_DEFAULT: 'model_default',
+    CSP_PROXY_API_KEY: 'proxy_api_key',
+    CSP_SYSTEM_PROMPT: 'system_prompt',
+    CSP_TOOLS_ENABLED: 'tools_enabled',
+    CSP_MAX_THINKING_TOKENS: 'max_thinking_tokens',
+  };
+  for (const [envKey, configKey] of Object.entries(envMap)) {
+    if (process.env[envKey]) config[configKey] = process.env[envKey];
+  }
+
+  // Init logger with final config (after all overrides applied)
+  Logger.init(config);
+
   return config;
 }
 
@@ -68,32 +73,43 @@ function getClientIP(req) {
          '127.0.0.1';
 }
 
-function serveStaticFile(res, filePath, contentType) {
-  const staticPath = path.join(__dirname, 'static', filePath);
-  fs.readFile(staticPath, 'utf8', (err, data) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not found');
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': contentType });
-    res.end(data);
-  });
+/**
+ * Check if Claude Code credentials exist (~/.claude/.credentials.json).
+ * The Agent SDK reads these automatically for authentication.
+ */
+function checkClaudeCredentials() {
+  try {
+    const credentialsPath = path.join(os.homedir(), '.claude', '.credentials.json');
+    if (!fs.existsSync(credentialsPath)) return { authenticated: false };
+    const data = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+    const oauth = data.claudeAiOauth;
+    if (!oauth || !oauth.accessToken) return { authenticated: false };
+    return {
+      authenticated: true,
+      expires_at: oauth.expiresAt ? new Date(oauth.expiresAt).toISOString() : null,
+    };
+  } catch {
+    return { authenticated: false };
+  }
 }
 
-function openBrowser(targetUrl) {
-  let command;
-  if (process.platform === 'darwin') {
-    command = `open "${targetUrl}"`;
-  } else if (process.platform === 'win32') {
-    command = `cmd /c start "" "${targetUrl}"`;
-  } else {
-    command = `xdg-open "${targetUrl}"`;
-  }
+/**
+ * Authenticate incoming request against proxy_api_key config.
+ * - If proxy_api_key is not configured: open access
+ * - If configured: require matching key via x-api-key or Authorization: Bearer
+ */
+function authenticateRequest(req, config) {
+  const proxyKey = config.proxy_api_key;
+  if (!proxyKey) return { ok: true };
 
-  exec(command, (error) => {
-    if (error) Logger.debug(`Failed to open browser: ${error.message}`);
-  });
+  const xApiKey = req.headers['x-api-key'];
+  const authHeader = req.headers['authorization'];
+  const providedKey = xApiKey || (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null);
+
+  if (!providedKey) return { ok: false, error: 'Missing API key' };
+  if (providedKey === proxyKey) return { ok: true };
+
+  return { ok: false, error: 'Invalid API key' };
 }
 
 function isRunningInDocker() {
@@ -101,12 +117,12 @@ function isRunningInDocker() {
   try {
     const cgroup = fs.readFileSync('/proc/self/cgroup', 'utf8');
     return cgroup.includes('docker') || cgroup.includes('containerd');
-  } catch (err) {
+  } catch {
     return false;
   }
 }
 
-async function handleRequest(req, res) {
+async function handleRequest(req, res, config) {
   const clientIP = getClientIP(req);
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
@@ -115,8 +131,8 @@ async function handleRequest(req, res) {
 
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, x-api-key, anthropic-version, anthropic-beta');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
@@ -124,132 +140,62 @@ async function handleRequest(req, res) {
     return;
   }
 
-  // --- OAuth Routes ---
-
-  if (pathname === '/auth/login' && req.method === 'GET') {
-    serveStaticFile(res, 'login.html', 'text/html');
-    return;
-  }
-
-  if (pathname === '/auth/get-url' && req.method === 'GET') {
-    try {
-      const pkce = OAuthManager.generatePKCE();
-      pkceStates.set(pkce.state, {
-        code_verifier: pkce.code_verifier,
-        created_at: Date.now()
-      });
-      const authUrl = OAuthManager.buildAuthorizationURL(pkce);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ url: authUrl, state: pkce.state }));
-      Logger.info('Generated OAuth authorization URL');
-    } catch (error) {
-      Logger.error('OAuth get-url error:', error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to generate OAuth URL' }));
-    }
-    return;
-  }
-
-  if (pathname === '/auth/callback' && req.method === 'GET') {
-    try {
-      const query = parsedUrl.query;
-      let code = query.code;
-      let state = query.state;
-
-      // Support manual code entry format: "code#state"
-      if (query.manual_code) {
-        const parts = query.manual_code.split('#');
-        if (parts.length !== 2) {
-          throw new Error('Invalid code format. Expected: code#state');
-        }
-        code = parts[0];
-        state = parts[1];
-      }
-
-      if (!code || !state) {
-        throw new Error('Missing authorization code or state');
-      }
-
-      const pkceData = pkceStates.get(state);
-      if (!pkceData) {
-        throw new Error('Invalid or expired state parameter. Please start the authorization process again.');
-      }
-      pkceStates.delete(state);
-
-      const tokens = await OAuthManager.exchangeCodeForTokens(code, pkceData.code_verifier, state);
-      const tokenData = {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at: Date.now() + (tokens.expires_in * 1000)
-      };
-      OAuthManager.saveTokens(tokenData);
-
-      serveStaticFile(res, 'callback.html', 'text/html');
-      Logger.info('OAuth authentication successful');
-    } catch (error) {
-      Logger.error('OAuth callback error:', error.message);
-      res.writeHead(500, { 'Content-Type': 'text/html' });
-      res.end(`<!DOCTYPE html><html><head><title>Authentication Failed</title></head>
-        <body><h1>Authentication Failed</h1><p>Error: ${error.message}</p>
-        <p><a href="/auth/login">Try again</a></p></body></html>`);
-    }
-    return;
-  }
-
-  if (pathname === '/auth/status' && req.method === 'GET') {
-    try {
-      const isAuthenticated = OAuthManager.isAuthenticated();
-      const expiration = OAuthManager.getTokenExpiration();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        authenticated: isAuthenticated,
-        expires_at: expiration ? expiration.toISOString() : null
-      }));
-    } catch (error) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to check authentication status' }));
-    }
-    return;
-  }
-
-  if (pathname === '/auth/logout' && req.method === 'GET') {
-    try {
-      OAuthManager.logout();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, message: 'Logged out successfully' }));
-      Logger.info('User logged out');
-    } catch (error) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to logout' }));
-    }
-    return;
-  }
-
   // --- Health Check ---
-
   if (pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', server: 'claude-sub-proxy', timestamp: Date.now() }));
     return;
   }
 
-  // --- API Proxy ---
+  // --- Auth Status (checks Claude Code credentials) ---
+  if (pathname === '/auth/status' && req.method === 'GET') {
+    const credStatus = checkClaudeCredentials();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      authenticated: credStatus.authenticated,
+      source: credStatus.authenticated ? 'claude_credentials' : 'none',
+      expires_at: credStatus.expires_at,
+    }));
+    return;
+  }
 
+  // --- Messages API ---
   if (req.method === 'POST' && pathname === '/v1/messages') {
+    const auth = authenticateRequest(req, config);
+    if (!auth.ok) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        type: 'error',
+        error: { type: 'authentication_error', message: auth.error }
+      }));
+      return;
+    }
+
     try {
       const body = await parseBody(req);
       Logger.debug(`Incoming request (${JSON.stringify(body).length} bytes)`);
-      await new ClaudeRequest(req).handleResponse(res, body);
+
+      if (body.stream) {
+        await executeStreaming(body, res, config);
+      } else {
+        const response = await executeNonStreaming(body, config);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(response));
+      }
     } catch (error) {
       Logger.error('Request error:', error.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.message }));
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          type: 'error',
+          error: { type: 'api_error', message: error.message }
+        }));
+      }
     }
     return;
   }
 
   // --- 404 ---
-
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
 }
@@ -257,51 +203,52 @@ async function handleRequest(req, res) {
 function startServer() {
   const config = loadConfig();
 
-  const server = http.createServer(handleRequest);
+  const server = http.createServer((req, res) => handleRequest(req, res, config));
   const port = parseInt(config.port) || 42069;
   const host = config.host || (isRunningInDocker() ? '0.0.0.0' : '127.0.0.1');
 
   server.listen(port, host, () => {
-    Logger.info(`claude-sub-proxy listening on ${host}:${port}`);
+    Logger.info(`claude-sub-proxy v2 listening on ${host}:${port}`);
+    Logger.info('  Powered by Claude Code Agent SDK');
     Logger.info('');
 
-    const isAuthenticated = OAuthManager.isAuthenticated();
-    const expiration = OAuthManager.getTokenExpiration();
+    // Check authentication sources
+    const credStatus = checkClaudeCredentials();
 
-    Logger.info('Authentication Status:');
-    if (isAuthenticated && expiration) {
-      Logger.info(`  Authenticated until ${expiration.toLocaleString()}`);
-    } else {
-      Logger.info('  Not authenticated');
-      const authUrl = `http://localhost:${port}/auth/login`;
-      Logger.info(`  Visit ${authUrl} to authenticate`);
-
-      const autoOpen = config.auto_open_browser !== 'false';
-      if (!isAuthenticated && autoOpen && !isRunningInDocker()) {
-        Logger.info('  Opening browser for authentication...');
-        setTimeout(() => openBrowser(authUrl), 1000);
+    Logger.info('Authentication:');
+    if (credStatus.authenticated) {
+      Logger.info('  Claude Code credentials found (~/.claude/.credentials.json)');
+      if (credStatus.expires_at) {
+        Logger.info(`  Token expires: ${credStatus.expires_at}`);
       }
+    } else {
+      Logger.info('  No credentials found.');
+      Logger.info('  Run "claude" CLI to authenticate.');
+    }
+
+    if (config.proxy_api_key) {
+      Logger.info('');
+      Logger.info('Proxy API Key: configured (authentication required)');
     }
 
     Logger.info('');
-    Logger.info('Proxy endpoint: POST /v1/messages');
-    Logger.info(`Example: curl -X POST http://localhost:${port}/v1/messages -H "Content-Type: application/json" -d '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'`);
+    Logger.info('Endpoint: POST /v1/messages');
+    Logger.info(`Example: curl -X POST http://localhost:${port}/v1/messages \\`);
+    Logger.info('  -H "Content-Type: application/json" \\');
+    Logger.info(`  -d '{"model":"claude-sonnet-4-6","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'`);
     Logger.info('');
   });
 
-  process.on('SIGTERM', () => {
+  const shutdown = () => {
     Logger.info('Shutting down...');
     server.close(() => process.exit(0));
-  });
-
-  process.on('SIGINT', () => {
-    Logger.info('Shutting down...');
-    server.close(() => process.exit(0));
-  });
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
-if (require.main === module) {
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   startServer();
 }
 
-module.exports = { startServer };
+export { startServer };

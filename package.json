@@ -1,7 +1,8 @@
 {
   "name": "claude-sub-proxy",
-  "version": "1.0.0",
-  "description": "Local proxy server that uses Claude.ai subscription OAuth token to access Anthropic API without API key",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Local HTTP API server powered by Claude Code Agent SDK — use your Claude subscription via standard Messages API",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -10,12 +11,16 @@
   "keywords": [
     "claude",
     "anthropic",
+    "agent-sdk",
     "proxy",
-    "oauth",
-    "subscription"
+    "subscription",
+    "claude-code"
   ],
   "license": "MIT",
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0"
   }
 }

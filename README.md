@@ -1,26 +1,41 @@
 # claude-sub-proxy
 
-用 Claude.ai 订阅账号（MAX/Pro）的 OAuth Token 调用 Anthropic API，无需 API credits。
+**English** | **[中文](README_CN.md)**
+
+Use your Claude.ai subscription (MAX/Pro) to call the Anthropic Messages API — powered by the Claude Code Agent SDK.
 
 ```
-你的应用  ──POST /v1/messages──▶  本地代理 (localhost:42069)  ──Bearer token──▶  api.anthropic.com
-                                        │
-                                  OAuth Token 管理
-                                 (自动刷新, 本地存储)
+Your App  ──POST /v1/messages──▶  claude-sub-proxy (localhost:42069)  ──Agent SDK──▶  Claude Code Runtime
+                                                                          │
+                                                                  Auto credential management
+                                                                 (~/.claude/.credentials.json)
 ```
 
-## 快速开始
+## Quick Start
+
+**Recommended: Use Claude Code for guided setup:**
 
 ```bash
 cd claude-sub-proxy
-npm start          # 启动代理，浏览器自动打开认证页
+claude
+# Then tell Claude: "Help me set up claude-sub-proxy"
+# Claude will ask about your use case and guide you through the best setup method:
+#   - Embedded: integrate into an existing project
+#   - Standalone: deploy as an independent service (Docker / Node.js)
+#   - Configure: customize advanced options (model, system prompt, tools, etc.)
 ```
 
-1. 点击 **Open Authorization Page** 跳转 claude.ai 授权
-2. 登录并授权后，复制页面上的授权码（格式 `code#state`）
-3. 粘贴到登录页提交
+**Or set up manually:**
 
-认证完成后，将 SDK 的 `base_url` 指向代理即可：
+```bash
+cd claude-sub-proxy
+npm install        # Install Agent SDK dependency
+npm start          # Start the server
+```
+
+**Prerequisites:** Run `claude` CLI at least once to authenticate (stores credentials at `~/.claude/.credentials.json`).
+
+Once running, point your SDK's `base_url` to the proxy:
 
 ```python
 import anthropic
@@ -31,55 +46,121 @@ client = anthropic.Anthropic(
 )
 
 message = client.messages.create(
-    model="claude-sonnet-4-20250514",
+    model="claude-sonnet-4-6",
     max_tokens=1024,
     messages=[{"role": "user", "content": "Hello!"}]
 )
 ```
 
-## 配置
+## How It Works
 
-编辑 `src/config.txt`：
+Unlike v1 which was a reverse proxy with manual OAuth token management, v2 uses the [Claude Code Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) to run Claude Code as a runtime:
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `port` | `42069` | 代理监听端口 |
-| `host` | 自动 | 为空时本机 `127.0.0.1`，Docker 中 `0.0.0.0` |
-| `log_level` | `INFO` | `ERROR` / `WARN` / `INFO` / `DEBUG` / `TRACE` |
-| `auto_open_browser` | `true` | 首次未认证时自动打开浏览器 |
+- **Authentication** is handled automatically — the SDK reads your Claude Code credentials
+- **Streaming** uses the same `BetaRawMessageStreamEvent` format as the official API
+- **Response format** is `BetaMessage` — directly compatible with the Messages API
 
-## 支持的模型
+## Docker
 
-所有通过 Claude.ai 订阅可用的模型均可使用，包括：
+```bash
+# Build
+docker build -t claude-sub-proxy .
 
-- `claude-sonnet-4-20250514`
-- `claude-opus-4-20250514`
-- `claude-haiku-3-5-20241022`
+# Run with Claude Code credentials
+docker run -d -p 42069:42069 -v ~/.claude:/root/.claude:ro claude-sub-proxy
 
-具体可用模型取决于你的订阅计划（Pro / MAX）。
+# Run with proxy authentication
+docker run -d -p 42069:42069 \
+  -v ~/.claude:/root/.claude:ro \
+  -e CSP_PROXY_API_KEY=your-secret-key \
+  claude-sub-proxy
+```
 
-## 常见问题
+## Proxy API Key Authentication
 
-**Token 过期怎么办？**
-代理会在 token 过期前 60 秒自动刷新，无需手动操作。如果 refresh token 也失效，重新访问 `/auth/login` 认证即可。
+Set `proxy_api_key` in `src/config.txt` or `CSP_PROXY_API_KEY` environment variable to require authentication for all requests. When configured, clients must provide the key via `x-api-key` header or `Authorization: Bearer` header.
 
-**能用多久？**
-只要你的 Claude.ai 订阅有效且 refresh token 未被撤销，代理可以持续工作。
+```python
+import anthropic
 
-**安全性？**
-- Token 存储在 `~/.claude-sub-proxy/tokens.json`，文件权限 `600`（仅所有者可读写）
-- 代理默认仅监听 `127.0.0.1`，外部无法访问
-- 不会将你的 token 发送到除 `api.anthropic.com` 以外的任何地方
+client = anthropic.Anthropic(
+    base_url="http://your-server:42069",
+    api_key="your-proxy-key"   # matches proxy_api_key in config
+)
+```
 
-**请求头需要传 API key 吗？**
-不需要。`x-api-key` 可填任意值或留空。但如果传入包含 `sk-ant` 的真实 API key，代理会直接使用该 key（适合混合使用场景）。
+- **Not configured** (default): open access
+- **Configured**: all `/v1/messages` requests require a matching key, otherwise 401
 
-## 致谢
+## Configuration
 
-本项目灵感来自：
-- [nanoclaw](https://github.com/hmk/nanoclaw) - 最小化 Claude Code 代理实现
-- [claude-code-proxy](https://github.com/nicekid1/claude-code-proxy) - Claude Code 代理参考实现
+Configuration can be set via `src/config.txt` or environment variables (`CSP_*` prefix). Environment variables take priority.
 
-## 免责声明
+| config.txt key | Environment Variable | Default | Description |
+|---------------|---------------------|---------|-------------|
+| `port` | `CSP_PORT` | `42069` | Server listening port |
+| `host` | `CSP_HOST` | Auto | `127.0.0.1` locally, `0.0.0.0` in Docker |
+| `log_level` | `CSP_LOG_LEVEL` | `INFO` | `ERROR` / `WARN` / `INFO` / `DEBUG` / `TRACE` |
+| `model_default` | `CSP_MODEL_DEFAULT` | `claude-sonnet-4-6` | Default model when not specified in request |
+| `proxy_api_key` | `CSP_PROXY_API_KEY` | *(empty)* | API key for proxy authentication (empty = open access) |
+| `system_prompt` | `CSP_SYSTEM_PROMPT` | *(empty)* | Custom system prompt (request-level takes priority) |
+| `tools_enabled` | `CSP_TOOLS_ENABLED` | `false` | Enable Claude Code built-in tools |
+| `max_thinking_tokens` | `CSP_MAX_THINKING_TOKENS` | *(empty)* | Default thinking budget (request-level takes priority) |
 
-仅供个人学习研究使用，请遵守 [Anthropic 服务条款](https://www.anthropic.com/terms)。
+## Supported Models
+
+All models available through your Claude.ai subscription, including:
+
+- `claude-opus-4-6`
+- `claude-sonnet-4-6`
+- `claude-haiku-4-5-20251001`
+
+Available models depend on your subscription plan (Pro / MAX).
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/v1/messages` | Messages API (streaming & non-streaming) |
+| GET | `/auth/status` | Check authentication status |
+| GET | `/health` | Health check |
+
+## Testing
+
+```bash
+# Non-streaming
+curl -X POST http://localhost:42069/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
+
+# Streaming
+curl -N -X POST http://localhost:42069/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":256,"stream":true,"messages":[{"role":"user","content":"Count 1 to 5"}]}'
+```
+
+## FAQ
+
+**How does authentication work?**
+The Agent SDK automatically reads credentials from `~/.claude/.credentials.json` (created by `claude` CLI). Token refresh is handled internally by the SDK.
+
+**Is it secure?**
+- The server listens on `127.0.0.1` by default — inaccessible from external networks
+- Credentials are managed by the Claude Code runtime, not stored by this proxy
+- Set `proxy_api_key` to require authentication when exposing to a network
+
+**What are the limitations compared to direct API access?**
+- `temperature`, `top_p`, `top_k` parameters are not forwarded (managed by Claude Code runtime)
+- `max_tokens` is managed by the runtime
+- Multi-turn conversations are converted to a structured prompt format
+- Each request spawns a Claude Code process (~1-2s overhead)
+
+## Acknowledgements
+
+- [Claude Code Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
+- [nanoclaw](https://github.com/hmk/nanoclaw) - Minimal Claude Code proxy implementation
+- [claude-code-proxy](https://github.com/nicekid1/claude-code-proxy) - Claude Code proxy reference implementation
+
+## Disclaimer
+
+For personal learning and research use only. Please comply with [Anthropic's Terms of Service](https://www.anthropic.com/terms).

@@ -2,4 +2,9 @@
 port=42069
 host=
 log_level=INFO
-auto_open_browser=true
+
+# Default model when not specified in the request
+model_default=claude-sonnet-4-6
+
+# API key for proxy authentication (leave empty for open access)
+proxy_api_key=
